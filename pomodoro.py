@@ -196,7 +196,9 @@ class PomodoroApp:
         if not self.config["bloquear_pausa"] or self.tela_pausas:
             return
 
+        # Detectar monitores via API do Windows
         monitores = []
+
         def callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
             mi = MONITORINFOEX()
             mi.cbSize = ctypes.sizeof(MONITORINFOEX)
@@ -209,18 +211,21 @@ class PomodoroApp:
             })
             return True
 
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(RECT), wintypes.LPARAM)
+        callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(RECT), wintypes.LPARAM
+        )
         user32.EnumDisplayMonitors(None, None, callback_type(callback), 0)
 
         if not monitores:
             monitores = [{"x": 0, "y": 0, "width": 1920, "height": 1080}]
 
-        log(f"Detectados {len(monitores)} monitor(es) via Windows API.")
-        log("Tecla secreta (Ctrl+Alt+Shift+Q) ativada.")
+        log(f"Telas detectadas: {len(monitores)} monitor(es).")
 
+        # Tecla secreta para desbloqueio emergencial
         if TECLADO_GLOBAL:
             keyboard.add_hotkey('ctrl+alt+shift+q', self.desbloquear_emergencia)
 
+        # Criar uma janela preta de bloqueio para cada monitor
         for m in monitores:
             tela = Toplevel(self.janela)
             tela.title("PAUSA OBRIGATÓRIA")
@@ -229,16 +234,53 @@ class PomodoroApp:
             tela.attributes("-topmost", True)
             tela.geometry(f"{m['width']}x{m['height']}+{m['x']}+{m['y']}")
 
+            # Bloquear eventos do mouse
             def bloquear_mouse(e): return "break"
             for ev in ["<Motion>", "<Button-1>", "<Button-2>", "<Button-3>"]:
                 tela.bind(ev, bloquear_mouse)
 
-            tk.Label(tela, text="PAUSA — NÃO MEXA!",
-                     fg="#00FFFF", bg="black", font=("Orbitron", 48, "bold")).pack(expand=True)
+            frame = tk.Frame(tela, bg="black")
+            frame.pack(expand=True)
+
+            tk.Label(
+                frame,
+                text="PAUSA — NÃO MEXA!",
+                fg="#00FFFF",
+                bg="black",
+                font=("Orbitron", 48, "bold")
+            ).pack(pady=20)
+
+            # Label de cronômetro específico desta tela
+            label_cronometro = tk.Label(
+                frame,
+                text="00:00",
+                fg="#FF4500",
+                bg="black",
+                font=("Orbitron", 72, "bold")
+            )
+            label_cronometro.pack(pady=30)
+
+            # Função local para esta janela
+            def atualizar_cronometro_tela(tela_ref=tela, label_ref=label_cronometro):
+                if not self.rodando or not tela_ref.winfo_exists():
+                    return
+                if self.tempo_restante > 0 and not self.pausado:
+                    mins, secs = divmod(self.tempo_restante, 60)
+                    label_ref.config(text=f"{mins:02d}:{secs:02d}")
+                elif self.tempo_restante <= 0:
+                    try:
+                        tela_ref.destroy()
+                    except:
+                        pass
+                    return
+                tela_ref.after(1000, atualizar_cronometro_tela, tela_ref, label_ref)
+
+            # Iniciar atualização individual
+            tela.after(100, atualizar_cronometro_tela, tela, label_cronometro)
 
             self.tela_pausas.append(tela)
 
-        log(f"Tela de pausa FORÇADA em {len(monitores)} monitor(es).")
+        log(f"Tela de pausa exibida em {len(monitores)} monitor(es).")
 
     def fechar_tela_pausa(self):
         if TECLADO_GLOBAL:
@@ -309,6 +351,10 @@ class PomodoroApp:
             self.iniciar_pausa()
         elif self.modo_pausa:
             log("Pausa finalizada.")
+            try:
+                winsound.Beep(1000, 600)  # Som de vitória
+            except:
+                pass
             self.iniciar_trabalho()
 
     def criar_icone_progresso(self, progresso):
