@@ -19,13 +19,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-# Google Calendar API
-from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-import pickle
-
 # ==============================
 # FORÇA DPI UNAWARE (PIXELS FÍSICOS)
 # ==============================
@@ -69,42 +62,11 @@ CONFIG_FILE = "config.ini"
 LOG_FILE = "pomodoro.log"
 STATS_FILE = "stats.json"
 DB_FILE = "pomodoro.db"
-SCOPES = ['https://www.googleapis.com/auth/calendar.events']
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
 
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(message)s")
 def log(msg):
     print(msg)
     logging.info(msg)
-
-# ==============================
-# GOOGLE CALENDAR
-# ==============================
-def get_calendar_service():
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'rb') as token:
-            creds = pickle.load(token)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'wb') as token:
-            pickle.dump(creds, token)
-    return build('calendar', 'v3', credentials=creds)
-
-def criar_evento_calendar(service, summary, start_time, end_time, description=""):
-    event = {
-        'summary': summary,
-        'description': description,
-        'start': {'dateTime': start_time.isoformat(), 'timeZone': 'America/Sao_Paulo'},
-        'end': {'dateTime': end_time.isoformat(), 'timeZone': 'America/Sao_Paulo'},
-    }
-    service.events().insert(calendarId='primary', body=event).execute()
-    log(f"Evento criado: {summary}")
 
 # ==============================
 # BANCO DE DADOS
@@ -161,7 +123,6 @@ def criar_config_padrao():
         }
         config["Janela"] = {"mostrar_janela": "True"}
         config["Icone"] = {"arquivo": "pomodoro.ico"}
-        config["Calendar"] = {"integrado": "True", "tempo_almoco": "60"}
         with open(CONFIG_FILE, "w") as f:
             config.write(f)
 
@@ -171,7 +132,6 @@ def carregar_config():
     pomodoro = config["Pomodoro"]
     janela = config["Janela"] if "Janela" in config else {"mostrar_janela": "True"}
     icone = config["Icone"] if "Icone" in config else {"arquivo": "pomodoro.ico"}
-    calendar = config["Calendar"] if "Calendar" in config else {"integrado": "True", "tempo_almoco": "60"}
     return {
         "trabalho": int(pomodoro["tempo_trabalho"]),
         "pausa_curta": int(pomodoro["pausa_curta"]),
@@ -179,9 +139,7 @@ def carregar_config():
         "ciclos_para_pausa_longa": int(pomodoro["ciclos_para_pausa_longa"]),
         "bloquear_pausa": pomodoro.get("bloquear_pausa", "True") == "True",
         "mostrar_janela": janela.get("mostrar_janela", "True") == "True",
-        "arquivo_icone": icone.get("arquivo", "pomodoro.ico"),
-        "integrar_calendar": calendar.get("integrado", "True") == "True",
-        "tempo_almoco": int(calendar.get("tempo_almoco", "60"))
+        "arquivo_icone": icone.get("arquivo", "pomodoro.ico")
     }
 
 def carregar_stats():
@@ -232,12 +190,6 @@ class PomodoroApp:
         self.tela_pausas = []
         self.icone = None
         self.job_id = None
-        self.service = None
-        if self.config["integrar_calendar"] and os.path.exists(CREDENTIALS_FILE):
-            try:
-                self.service = get_calendar_service()
-            except:
-                log("Falha na autenticação do Calendar. Verifique credentials.json")
 
         init_db()
 
@@ -251,7 +203,7 @@ class PomodoroApp:
     def criar_janela(self):
         self.janela = tk.Tk()
         self.janela.title("Pomodoro Premium")
-        self.janela.geometry("300x520")
+        self.janela.geometry("300x460")
         self.janela.resizable(False, False)
         self.janela.configure(bg="#1C1C28")
         self.janela.attributes("-topmost", True)
@@ -272,16 +224,14 @@ class PomodoroApp:
         frame_botoes = tk.Frame(self.janela, bg="#1C1C28")
         frame_botoes.pack(pady=5)
 
-        style = {"width": 20, "padx": 5, "pady": 3, "font": ("Orbitron", 10, "bold")}
+        style = {"width": 20, "padx": 5, "pady": 3, "font": ("Orbitron", 11, "bold")}
         tk.Button(frame_botoes, text="Iniciar Trabalho", command=self.iniciar_trabalho, bg="#00FF7F", fg="black", **style).grid(row=0, column=0, padx=5, pady=3)
         tk.Button(frame_botoes, text="Iniciar Pausa", command=self.iniciar_pausa, bg="#FFD700", fg="black", **style).grid(row=1, column=0, padx=5, pady=3)
         tk.Button(frame_botoes, text="Pausar / Retomar", command=self.alternar_pausa, bg="#FF69B4", fg="white", **style).grid(row=2, column=0, padx=5, pady=3)
         tk.Button(frame_botoes, text="Reiniciar", command=self.reiniciar, bg="#FF4500", fg="white", **style).grid(row=3, column=0, padx=5, pady=3)
         tk.Button(frame_botoes, text="Começar o Dia", command=self.comecar_dia, bg="#9400D3", fg="white", **style).grid(row=4, column=0, padx=5, pady=3)
-        tk.Button(frame_botoes, text="Hora do Almoço", command=self.hora_almoco, bg="#32CD32", fg="white", **style).grid(row=5, column=0, padx=5, pady=3)
-        tk.Button(frame_botoes, text="Finalizar o Dia", command=self.finalizar_dia, bg="#8B0000", fg="white", **style).grid(row=6, column=0, padx=5, pady=3)
-        tk.Button(frame_botoes, text="Estatísticas", command=self.mostrar_estatisticas, bg="#1E90FF", fg="white", **style).grid(row=7, column=0, padx=5, pady=3)
-        tk.Button(frame_botoes, text="Gráficos", command=self.mostrar_graficos, bg="#FF1493", fg="white", **style).grid(row=8, column=0, padx=5, pady=3)
+        tk.Button(frame_botoes, text="Estatísticas", command=self.mostrar_estatisticas, bg="#1E90FF", fg="white", **style).grid(row=5, column=0, padx=5, pady=3)
+        tk.Button(frame_botoes, text="Gráficos", command=self.mostrar_graficos, bg="#FF1493", fg="white", **style).grid(row=6, column=0, padx=5, pady=3)
 
         self.janela.protocol("WM_DELETE_WINDOW", self.janela.withdraw)
         self.janela.bind("<Control-l>", lambda e: bloquear_tela())
@@ -418,10 +368,6 @@ class PomodoroApp:
         self.fechar_tela_pausa()
         if self.tempo_restante <= 0:
             self.tempo_restante = self.config["trabalho"] * 60
-        if self.service:
-            agora = datetime.now()
-            fim = agora + timedelta(minutes=self.config["trabalho"])
-            criar_evento_calendar(self.service, "Pomodoro: Foco", agora, fim, f"Sessão de {self.config['trabalho']} min")
         log("Pomodoro iniciado (trabalho).")
         self.notificar("Pomodoro", f"{self.tempo_restante//60} minutos de foco.")
         self.atualizar_tempo()
@@ -436,10 +382,6 @@ class PomodoroApp:
         else:
             self.tempo_restante = self.config["pausa_curta"] * 60
             tipo = "curta"
-        if self.service:
-            agora = datetime.now()
-            fim = agora + timedelta(minutes=self.tempo_restante//60)
-            criar_evento_calendar(self.service, f"Pausa {tipo.capitalize()}", agora, fim)
         log(f"Pausa {tipo} iniciada.")
         self.notificar("Pausa", f"{self.tempo_restante//60} minutos de descanso.")
         self.mostrar_tela_pausa()
@@ -508,38 +450,6 @@ class PomodoroApp:
         log("Novo dia iniciado! Contador zerado.")
         self.notificar("Novo Dia", "Jornada reiniciada com sucesso!")
         self.atualizar_interface()
-
-    def hora_almoco(self):
-        if not messagebox.askyesno("Hora do Almoço", "Iniciar pausa para almoço e criar evento no Calendar?"):
-            return
-        self.pausado = True
-        self.mostrar_tela_pausa()
-        agora = datetime.now()
-        duracao = self.config["tempo_almoco"]
-        fim = agora + timedelta(minutes=duracao)
-        if self.service:
-            criar_evento_calendar(self.service, "Almoço", agora, fim, f"Pausa de {duracao} min para refeição")
-        self.notificar("Almoço", f"{duracao} minutos de pausa para almoço.")
-        self.tempo_restante = duracao * 60
-        self.modo_pausa = True
-        self.atualizar_interface()
-        self.atualizar_tempo()
-
-    def finalizar_dia(self):
-        if not messagebox.askyesno("Finalizar o Dia", "Salvar stats, criar resumo no Calendar e zerar?"):
-            return
-        hoje = str(date.today())
-        trabalho_min = self.tempo_trabalho_hoje // 60
-        pausa_min = self.tempo_pausa_hoje // 60
-        registrar_sessao_diaria(hoje, trabalho_min, pausa_min, self.ciclos_hoje)
-        if self.service:
-            agora = datetime.now()
-            fim = agora + timedelta(hours=1)
-            descricao = f"Resumo: {self.ciclos_hoje} ciclos | {trabalho_min} min trabalhados | {pausa_min} min pausas"
-            criar_evento_calendar(self.service, "Resumo do Dia - Pomodoro", agora, fim, descricao)
-        self.comecar_dia()  # Zera contadores
-        self.notificar("Fim do Dia", "Jornada finalizada e salva!")
-        log("Dia finalizado.")
 
     def mostrar_estatisticas(self):
         stats = obter_estatisticas()
@@ -672,8 +582,6 @@ class PomodoroApp:
             item("Pausar / Retomar", lambda icon, item: self.alternar_pausa()),
             item("Reiniciar", lambda icon, item: self.reiniciar()),
             item("Começar o Dia", lambda icon, item: self.comecar_dia()),
-            item("Hora do Almoço", lambda icon, item: self.hora_almoco()),
-            item("Finalizar o Dia", lambda icon, item: self.finalizar_dia()),
             item("Estatísticas", lambda icon, item: self.mostrar_estatisticas()),
             item("Gráficos", lambda icon, item: self.mostrar_graficos()),
             item("Bloquear Tela (Ctrl+L)", lambda icon, item: bloquear_tela()),

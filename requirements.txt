@@ -1,4 +1,24 @@
-Pillow==10.4.0
+# Interface e Tray
 pystray==0.19.5
+Pillow==10.4.0
 plyer==2.1.0
+
+# Teclado Global (opcional, mas recomendado)
 keyboard==0.13.5
+
+# Gráficos
+matplotlib==3.9.2
+
+# Banco de Dados
+# (SQLite nativo do Python - não precisa instalar)
+
+# Google Calendar API
+google-api-python-client==2.149.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+google-auth==2.35.0
+
+# Outros (geralmente já inclusos no Python)
+# tkinter (nativo)
+# ctypes (nativo)
+# logging, json, time, threading, os, configparser (nativos)
