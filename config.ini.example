@@ -13,8 +13,9 @@ arquivo = pomodoro.ico
 
 [Calendar]
 integrado = False
+tempo_almoco = 60
 
 [Telegram]
 ativo = False
-token = 
-chat_id = 
+token = SEU_TOKEN_DO_BOT_TELEGRAM
+chat_id = SEU_CHAT_ID

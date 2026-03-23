@@ -27,6 +27,7 @@ Um timer Pomodoro **avançado** com:
 | Notificações + som | Done |
 | **Gráficos com Matplotlib** | Done |
 | **Integração com Google Calendar** | Done |
+| **Integração com Telegram** | Done |
 | **Botão "Hora do Almoço"** | Done |
 | **Botão "Finalizar o Dia"** | Done |
 
@@ -37,6 +38,26 @@ Um timer Pomodoro **avançado** com:
 - **Windows 10/11**
 - **Python 3.8+** (recomendado 3.11)
 - Executar como **Administrador** (obrigatório para `keyboard`)
+
+---
+
+## Estrutura do Projeto
+
+```
+Pomodoro/
+├── pomodoro.py              # Código principal da aplicação
+├── config.ini               # Configurações (criado automaticamente se não existir)
+├── config.ini.example       # Exemplo de configuração com todas as opções
+├── credentials.json.example # Exemplo da estrutura do credentials do Google Calendar
+├── Readme.md                # Este ficheiro
+├── requirements.txt         # Dependências Python
+│
+│  (Ficheiros gerados automaticamente pela app)
+├── pomodoro.db              # Base de dados SQLite com estatísticas
+├── pomodoro.log             # Log de eventos
+├── stats.json               # Estatísticas do dia atual
+└── token.json               # Token OAuth do Google Calendar (gerado no primeiro login)
+```
 
 ---
 
@@ -60,7 +81,7 @@ O Pomodoro cria eventos automáticos no seu Google Calendar (ex: "Pomodoro: Foco
      - User support email: Seu e-mail
      - Developer contact: Seu e-mail
    - Clique "Save and Continue" nas seções (Scopes, Test users).
-   - Em **Test users**, adicione seu e-mail (ex: hardjunior1@gmail.com) > Save.
+   - Em **Test users**, adicione seu e-mail (ex: seuemail@gmail.com) > Save.
 
 4. **Crie Credenciais (OAuth Client ID):**
    - Vá em "APIs & Services" > "Credentials".
@@ -68,11 +89,12 @@ O Pomodoro cria eventos automáticos no seu Google Calendar (ex: "Pomodoro: Foco
    - Application type: **Desktop application**.
    - Name: "Pomodoro Desktop" > Create.
    - Baixe o arquivo JSON (ícone de download) > Renomeie para `credentials.json` > Coloque na pasta do app.
+   - Use o ficheiro `credentials.json.example` como referência para a estrutura esperada.
 
 5. **Gere o `token.json` (Primeira Execução):**
    - Rode o app: `python pomodoro.py`.
    - O navegador abre para login > Selecione sua conta > Autorize.
-   - Se vir "Este app não foi verificado", clique **Avançado** > **Ir para Pomodoro Premium (não seguro)" > Autorize.
+   - Se vir "Este app não foi verificado", clique **Avançado** > **Ir para Pomodoro Premium (não seguro)** > Autorize.
    - O `token.json` é gerado automaticamente na pasta.
 
 > **Dicas:**
@@ -82,11 +104,42 @@ O Pomodoro cria eventos automáticos no seu Google Calendar (ex: "Pomodoro: Foco
 
 ---
 
+## Configuração do Telegram
+
+O Pomodoro pode enviar notificações via Telegram Bot. Para ativar:
+
+1. **Crie um Bot no Telegram:**
+   - Fale com o [@BotFather](https://t.me/BotFather) no Telegram.
+   - Envie `/newbot` e siga as instruções.
+   - Copie o **token** do bot (ex: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`).
+
+2. **Obtenha o seu Chat ID:**
+   - Fale com o [@userinfobot](https://t.me/userinfobot) ou [@getmyid_bot](https://t.me/getmyid_bot).
+   - Copie o seu **chat_id** (ex: `123456789`).
+
+3. **Configure no `config.ini`:**
+   ```ini
+   [Telegram]
+   ativo = True
+   token = SEU_TOKEN_DO_BOT
+   chat_id = SEU_CHAT_ID
+   ```
+
+---
+
 ## Instalação
 
 1. **Clone ou baixe o projeto**
 2. **Abra o terminal na pasta**
-3. **Instale as dependências:**
+3. **Copie os ficheiros de exemplo:**
+
+```bash
+copy config.ini.example config.ini
+```
+
+4. **Edite o `config.ini`** com as suas preferências.
+
+5. **Instale as dependências:**
 
 ```bash
 pip install -r requirements.txt
@@ -120,8 +173,11 @@ python pomodoro.py
    - `<Iniciar Pausa>` → 5 min (ou 15 após 4 ciclos)
    - `<Pausar / Retomar>`
    - `<Reiniciar>`
+   - `<Começar o Dia>` → inicia rotina de trabalho
    - `<Hora do Almoço>` → pausa + evento no Calendar
    - `<Finalizar o Dia>` → salva + resumo no Calendar
+   - `<Estatísticas>` → mostra resumo do dia e histórico
+   - `<Gráficos>` → gráficos de ciclos, tempo trabalho/pausa e evolução
 
 3. **Durante a pausa:**
    - **TODOS os monitores ficam pretos**
@@ -136,28 +192,44 @@ python pomodoro.py
 
 ## Personalização (`config.ini`)
 
-Edite o arquivo `config.ini`:
+Edite o arquivo `config.ini` (ou copie o `config.ini.example`):
 
 ```ini
 [Pomodoro]
-tempo_trabalho = 25
-pausa_curta = 5
-pausa_longa = 15
-ciclos_para_pausa_longa = 4
-bloquear_pausa = True
+tempo_trabalho = 25          # Minutos de trabalho por ciclo
+pausa_curta = 5              # Minutos de pausa curta
+pausa_longa = 15             # Minutos de pausa longa
+ciclos_para_pausa_longa = 4  # Ciclos antes da pausa longa
+bloquear_pausa = True        # Bloquear ecrã durante pausa
 
 [Janela]
-mostrar_janela = True
+mostrar_janela = True        # Mostrar janela principal ao iniciar
 
 [Icone]
-arquivo = pomodoro.ico
+arquivo = pomodoro.ico       # Ficheiro de ícone personalizado (64x64)
 
 [Calendar]
-integrado = True
-tempo_almoco = 60
+integrado = True             # Integrar com Google Calendar
+tempo_almoco = 60            # Duração do almoço em minutos
+
+[Telegram]
+ativo = False                # Ativar notificações via Telegram
+token = SEU_TOKEN             # Token do bot Telegram
+chat_id = SEU_CHAT_ID         # Chat ID do Telegram
 ```
 
 > Coloque um `pomodoro.ico` (64x64) na pasta para ícone personalizado.
+
+---
+
+## Ficheiros de Exemplo
+
+| Ficheiro | Descrição |
+|----------|-----------|
+| `config.ini.example` | Exemplo completo do `config.ini` com todas as opções e valores padrão. Copie para `config.ini` e personalize. |
+| `credentials.json.example` | Estrutura esperada do ficheiro de credenciais do Google Calendar. Substitua pelos seus dados do Google Cloud Console. |
+
+> **Nota:** O `token.json` é gerado **automaticamente** pela aplicação na primeira vez que faz login no Google Calendar. Não precisa de criar este ficheiro manualmente.
 
 ---
 
@@ -182,11 +254,15 @@ pyinstaller --onefile --windowed --icon=pomodoro.ico pomodoro.py
 
 ---
 
-## Logs
+## Logs e Dados
 
-- `pomodoro.log` → registro de eventos
-- `config.ini` → configurações
-- `pomodoro.db` → estatísticas (SQLite)
+| Ficheiro | Descrição |
+|----------|-----------|
+| `pomodoro.log` | Registo de eventos da aplicação |
+| `config.ini` | Configurações personalizáveis |
+| `pomodoro.db` | Estatísticas guardadas (SQLite) |
+| `stats.json` | Estatísticas do dia atual |
+| `token.json` | Token OAuth do Google Calendar (auto-gerado) |
 
 ---
 
@@ -204,6 +280,7 @@ pyinstaller --onefile --windowed --icon=pomodoro.ico pomodoro.py
 - Keyboard
 - Matplotlib
 - Google Calendar API
+- Telegram Bot API
 - Windows API
 
 ---

@@ -4,6 +4,9 @@ import os
 import logging
 import configparser
 import json
+import math
+import urllib.request
+import urllib.parse
 from datetime import date, datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import pystray
@@ -18,6 +21,19 @@ import sqlite3
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+import copy as _copy
+import matplotlib.path as _mpath
+
+# Fix para RecursionError com Python 3.14 e matplotlib deepcopy
+def _fixed_path_deepcopy(self, memo):
+    cls = type(self)
+    result = cls.__new__(cls)
+    memo[id(self)] = result
+    for k, v in self.__dict__.items():
+        setattr(result, k, _copy.deepcopy(v, memo))
+    return result
+
+_mpath.Path.__deepcopy__ = _fixed_path_deepcopy
 
 # Google Calendar API
 from googleapiclient.discovery import build
@@ -27,12 +43,15 @@ from google.oauth2.credentials import Credentials
 import pickle
 
 # ==============================
-# FORÇA DPI UNAWARE (PIXELS FÍSICOS)
+# FORÇA DPI AWARE (PIXELS FÍSICOS)
 # ==============================
 try:
-    ctypes.windll.user32.SetProcessDPIAware()
-except:
-    pass
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per Monitor DPI Aware
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except:
+        pass
 
 # ==============================
 # WINDOWS API
@@ -77,6 +96,23 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s -
 def log(msg):
     print(msg)
     logging.info(msg)
+
+# ==============================
+# TELEGRAM
+# ==============================
+def enviar_telegram(token, chat_id, mensagem):
+    """Envia mensagem via Telegram Bot API."""
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urllib.parse.urlencode({
+            'chat_id': chat_id,
+            'text': mensagem,
+            'parse_mode': 'HTML'
+        }).encode('utf-8')
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        log(f"Erro ao enviar Telegram: {e}")
 
 # ==============================
 # GOOGLE CALENDAR
@@ -162,6 +198,7 @@ def criar_config_padrao():
         config["Janela"] = {"mostrar_janela": "True"}
         config["Icone"] = {"arquivo": "pomodoro.ico"}
         config["Calendar"] = {"integrado": "True", "tempo_almoco": "60"}
+        config["Telegram"] = {"ativo": "False", "token": "", "chat_id": ""}
         with open(CONFIG_FILE, "w") as f:
             config.write(f)
 
@@ -172,6 +209,7 @@ def carregar_config():
     janela = config["Janela"] if "Janela" in config else {"mostrar_janela": "True"}
     icone = config["Icone"] if "Icone" in config else {"arquivo": "pomodoro.ico"}
     calendar = config["Calendar"] if "Calendar" in config else {"integrado": "True", "tempo_almoco": "60"}
+    telegram = config["Telegram"] if "Telegram" in config else {"ativo": "False", "token": "", "chat_id": ""}
     return {
         "trabalho": int(pomodoro["tempo_trabalho"]),
         "pausa_curta": int(pomodoro["pausa_curta"]),
@@ -181,7 +219,10 @@ def carregar_config():
         "mostrar_janela": janela.get("mostrar_janela", "True") == "True",
         "arquivo_icone": icone.get("arquivo", "pomodoro.ico"),
         "integrar_calendar": calendar.get("integrado", "True") == "True",
-        "tempo_almoco": int(calendar.get("tempo_almoco", "60"))
+        "tempo_almoco": int(calendar.get("tempo_almoco", "60")),
+        "telegram_ativo": telegram.get("ativo", "False") == "True",
+        "telegram_token": telegram.get("token", ""),
+        "telegram_chat_id": telegram.get("chat_id", ""),
     }
 
 def carregar_stats():
@@ -209,6 +250,18 @@ def bloquear_tela():
     except Exception as e:
         log(f"Falha ao bloquear tela: {e}")
 
+def is_session_locked():
+    """Verifica se a sessao do Windows esta bloqueada (Win+L).
+    Usa OpenInputDesktop - retorna None/0 quando a tela esta no desktop seguro (bloqueada)."""
+    try:
+        hDesktop = ctypes.windll.user32.OpenInputDesktop(0, 0, 0x0001)
+        if hDesktop != 0:
+            ctypes.windll.user32.CloseDesktop(hDesktop)
+            return False
+        return True
+    except Exception:
+        return False
+
 # ==============================
 # CLASSE PRINCIPAL
 # ==============================
@@ -232,6 +285,10 @@ class PomodoroApp:
         self.tela_pausas = []
         self.icone = None
         self.job_id = None
+        self.tempo_total_pausa = 0
+        self.tela_bloqueada = False
+        self._contagem_desbloqueio = 0
+        self._iniciar_trabalho_ao_desbloquear = False
         self.service = None
         if self.config["integrar_calendar"] and os.path.exists(CREDENTIALS_FILE):
             try:
@@ -247,6 +304,12 @@ class PomodoroApp:
             winsound.Beep(880, 400)
         except:
             pass
+        if self.config.get("telegram_ativo") and self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
+            threading.Thread(
+                target=enviar_telegram,
+                args=(self.config["telegram_token"], self.config["telegram_chat_id"], f"<b>{titulo}</b>\n{mensagem}"),
+                daemon=True
+            ).start()
 
     def criar_janela(self):
         self.janela = tk.Tk()
@@ -284,8 +347,16 @@ class PomodoroApp:
         tk.Button(frame_botoes, text="Gráficos", command=self.mostrar_graficos, bg="#FF1493", fg="white", **style).grid(row=8, column=0, padx=5, pady=3)
 
         self.janela.protocol("WM_DELETE_WINDOW", self.janela.withdraw)
-        self.janela.bind("<Control-l>", lambda e: bloquear_tela())
+        self.janela.bind("<Control-l>", lambda e: self.bloquear_e_pausar())
         return self.janela
+
+    def bloquear_e_pausar(self):
+        """Bloqueia a tela e pausa o contador."""
+        self.pausado = True
+        self.tela_bloqueada = True
+        self._contagem_desbloqueio = 0
+        bloquear_tela()
+        log("Tela bloqueada via Ctrl+L. Contador pausado.")
 
     def atualizar_tempo(self):
         if self.job_id:
@@ -293,6 +364,33 @@ class PomodoroApp:
         self.job_id = self.janela.after(1000, self.tick)
 
     def tick(self):
+        # Deteccao automatica de mudanca de dia (meia-noite)
+        hoje = str(date.today())
+        if self.stats.get("ultimo_dia") != hoje:
+            self._reset_dia_automatico(hoje)
+            return
+
+        # Deteccao de bloqueio/desbloqueio de tela (Win+L)
+        tela_agora_bloqueada = is_session_locked()
+        if tela_agora_bloqueada and not self.tela_bloqueada:
+            self.tela_bloqueada = True
+            self.pausado = True
+            self._contagem_desbloqueio = 0
+            log("Tela bloqueada detectada. Contagem pausada automaticamente.")
+        elif tela_agora_bloqueada and self.tela_bloqueada:
+            self._contagem_desbloqueio = 0
+        elif not tela_agora_bloqueada and self.tela_bloqueada:
+            self._contagem_desbloqueio += 1
+            if self._contagem_desbloqueio >= 10:
+                self.tela_bloqueada = False
+                self.pausado = False
+                self._contagem_desbloqueio = 0
+                log("Tela desbloqueada. Contagem retomada.")
+                self.fechar_tela_pausa()
+                if self._iniciar_trabalho_ao_desbloquear:
+                    self._iniciar_trabalho_ao_desbloquear = False
+                    self.iniciar_trabalho()
+
         if self.rodando and self.tempo_restante > 0 and not self.pausado:
             self.tempo_restante -= 1
             if self.modo_pomodoro:
@@ -332,6 +430,9 @@ class PomodoroApp:
         log("TECLA SECRETA ATIVADA: Pausa desbloqueada!")
         self.fechar_tela_pausa()
         self.pausado = False
+        self.tela_bloqueada = False
+        self._contagem_desbloqueio = 0
+        self._iniciar_trabalho_ao_desbloquear = False
         self.atualizar_tempo()
         self.notificar("EMERGÊNCIA", "Pausa desbloqueada!")
 
@@ -363,10 +464,15 @@ class PomodoroApp:
         if TECLADO_GLOBAL:
             keyboard.add_hotkey('ctrl+alt+shift+q', self.desbloquear_emergencia)
 
+        if self.tempo_total_pausa <= 0:
+            self.tempo_total_pausa = self.tempo_restante
+
+        WIN_BG = "#0078D7"
+
         for m in monitores:
             tela = Toplevel(self.janela)
-            tela.title("PAUSA OBRIGATÓRIA")
-            tela.configure(bg="black")
+            tela.title("")
+            tela.configure(bg=WIN_BG)
             tela.overrideredirect(True)
             tela.attributes("-topmost", True)
             tela.geometry(f"{m['width']}x{m['height']}+{m['x']}+{m['y']}")
@@ -375,28 +481,72 @@ class PomodoroApp:
             for ev in ["<Motion>", "<Button-1>", "<Button-2>", "<Button-3>"]:
                 tela.bind(ev, bloquear_mouse)
 
-            frame = tk.Frame(tela, bg="black")
-            frame.pack(expand=True)
+            frame = tk.Frame(tela, bg=WIN_BG)
+            frame.place(relx=0.5, rely=0.5, anchor="center")
 
-            tk.Label(frame, text="PAUSA — NÃO MEXA!", fg="#00FFFF", bg="black", font=("Orbitron", 48, "bold")).pack(pady=20)
-            label_cronometro = tk.Label(frame, text="00:00", fg="#FF4500", bg="black", font=("Orbitron", 72, "bold"))
-            label_cronometro.pack(pady=30)
+            canvas_size = 120
+            canvas = tk.Canvas(frame, width=canvas_size, height=canvas_size,
+                               bg=WIN_BG, highlightthickness=0)
+            canvas.pack(pady=(0, 40))
 
-            def atualizar_cronometro_tela(tela_ref=tela, label_ref=label_cronometro):
-                if not self.rodando or not tela_ref.winfo_exists():
+            label_percent = tk.Label(frame, text="Trabalhando nas atualizações 0%",
+                                     fg="white", bg=WIN_BG, font=("Segoe UI", 26))
+            label_percent.pack(pady=(0, 15))
+
+            label_msg = tk.Label(frame,
+                                 text="Não desligue o computador. Isso pode demorar um pouco.",
+                                 fg="white", bg=WIN_BG, font=("Segoe UI", 12))
+            label_msg.pack(pady=(0, 10))
+
+            label_msg2 = tk.Label(frame,
+                                  text="O computador será reiniciado várias vezes.",
+                                  fg="white", bg=WIN_BG, font=("Segoe UI", 12))
+            label_msg2.pack(pady=(0, 5))
+
+            angle_var = [0]
+
+            def animar_pontos(canvas_ref=canvas, angle_ref=angle_var,
+                              tela_ref=tela, cs=canvas_size):
+                if not tela_ref.winfo_exists() or not canvas_ref.winfo_exists():
+                    return
+                try:
+                    canvas_ref.delete("dots")
+                    cx, cy = cs // 2, cs // 2
+                    radius = 35
+                    num_dots = 12
+                    for i in range(num_dots):
+                        a = math.radians(angle_ref[0] + i * (360 / num_dots))
+                        x = cx + radius * math.cos(a)
+                        y = cy + radius * math.sin(a)
+                        brightness = max(40, 255 - i * 20)
+                        color = f"#{brightness:02x}{brightness:02x}{brightness:02x}"
+                        dot_size = max(2, 5 - i * 0.3)
+                        canvas_ref.create_oval(
+                            x - dot_size, y - dot_size,
+                            x + dot_size, y + dot_size,
+                            fill=color, outline="", tags="dots")
+                    angle_ref[0] = (angle_ref[0] - 6) % 360
+                    tela_ref.after(50, animar_pontos, canvas_ref, angle_ref, tela_ref, cs)
+                except Exception:
+                    return
+
+            def atualizar_cronometro_tela(tela_ref=tela, label_ref=label_percent):
+                if not self.rodando or not tela_ref.winfo_exists() or not label_ref.winfo_exists():
                     return
                 if self.tempo_restante > 0 and not self.pausado:
-                    mins, secs = divmod(self.tempo_restante, 60)
-                    label_ref.config(text=f"{mins:02d}:{secs:02d}")
+                    total = self.tempo_total_pausa if self.tempo_total_pausa > 0 else 1
+                    elapsed = total - self.tempo_restante
+                    percent = min(99, int((elapsed / total) * 100))
+                    label_ref.config(text=f"Trabalhando nas atualizações {percent}%")
                 elif self.tempo_restante <= 0:
-                    try:
-                        tela_ref.destroy()
-                    except:
-                        pass
+                    label_ref.config(text="Trabalhando nas atualizações 100%")
+                    tela_ref.after(1500,
+                                   lambda: tela_ref.destroy() if tela_ref.winfo_exists() else None)
                     return
                 tela_ref.after(1000, atualizar_cronometro_tela, tela_ref, label_ref)
 
-            tela.after(100, atualizar_cronometro_tela, tela, label_cronometro)
+            tela.after(100, animar_pontos, canvas, angle_var, tela, canvas_size)
+            tela.after(100, atualizar_cronometro_tela, tela, label_percent)
             self.tela_pausas.append(tela)
 
     def fechar_tela_pausa(self):
@@ -412,12 +562,41 @@ class PomodoroApp:
                 pass
         self.tela_pausas.clear()
 
+    def _reset_dia_automatico(self, hoje):
+        """Reset automatico ao detectar mudanca de dia (meia-noite)."""
+        ontem = self.stats.get("ultimo_dia", hoje)
+        trabalho_min = self.tempo_trabalho_hoje // 60
+        pausa_min = self.tempo_pausa_hoje // 60
+        if trabalho_min > 0 or pausa_min > 0 or self.ciclos_hoje > 0:
+            registrar_sessao_diaria(ontem, trabalho_min, pausa_min, self.ciclos_hoje)
+
+        # Parar contagem
+        self.modo_pomodoro = False
+        self.modo_pausa = False
+        self.pausado = False
+        self.tempo_restante = 0
+        self.fechar_tela_pausa()
+        self._iniciar_trabalho_ao_desbloquear = False
+
+        # Zerar contadores para novo dia
+        self.ciclos_hoje = 0
+        self.ciclos_concluidos = 0
+        self.tempo_trabalho_hoje = 0
+        self.tempo_pausa_hoje = 0
+        self.tempo_total_pausa = 0
+        self.stats = {"ultimo_dia": hoje, "ciclos_hoje": 0}
+        salvar_stats(self.stats)
+
+        log(f"Dia {ontem} finalizado automaticamente a meia-noite. Contadores zerados.")
+        self.notificar("Novo Dia", f"Dia {ontem} encerrado. Contadores zerados para {hoje}.")
+        self.atualizar_interface()
+
     def iniciar_trabalho(self):
         self.modo_pomodoro = True
         self.modo_pausa = False
+        self.pausado = False
         self.fechar_tela_pausa()
-        if self.tempo_restante <= 0:
-            self.tempo_restante = self.config["trabalho"] * 60
+        self.tempo_restante = self.config["trabalho"] * 60
         if self.service:
             agora = datetime.now()
             fim = agora + timedelta(minutes=self.config["trabalho"])
@@ -436,17 +615,23 @@ class PomodoroApp:
         else:
             self.tempo_restante = self.config["pausa_curta"] * 60
             tipo = "curta"
+        self.tempo_total_pausa = self.tempo_restante
         if self.service:
             agora = datetime.now()
             fim = agora + timedelta(minutes=self.tempo_restante//60)
             criar_evento_calendar(self.service, f"Pausa {tipo.capitalize()}", agora, fim)
         log(f"Pausa {tipo} iniciada.")
         self.notificar("Pausa", f"{self.tempo_restante//60} minutos de descanso.")
+        self.pausado = False
         self.mostrar_tela_pausa()
         self.atualizar_tempo()
         self.atualizar_interface()
 
     def alternar_pausa(self):
+        if self.tela_bloqueada:
+            self.tela_bloqueada = False
+            self._contagem_desbloqueio = 0
+            self._iniciar_trabalho_ao_desbloquear = False
         self.pausado = not self.pausado
         if self.pausado:
             self.mostrar_tela_pausa()
@@ -483,15 +668,25 @@ class PomodoroApp:
             )
 
             log(f"Ciclo concluído. Total: {self.ciclos_concluidos} | Hoje: {self.ciclos_hoje}")
-            self.notificar("Fim do trabalho!", f"Ciclo {self.ciclos_hoje} do dia concluído!")
+            self.notificar("Fim do trabalho!", f"Ciclo {self.ciclos_hoje} do dia concluído! Pausa iniciada.")
             self.iniciar_pausa()
         elif self.modo_pausa:
-            log("Pausa finalizada.")
+            log("Pausa finalizada. Bloqueando tela.")
+            self.fechar_tela_pausa()
+            self.modo_pausa = False
+            self.tempo_restante = 0
+            self.tempo_total_pausa = 0
+            self.atualizar_interface()
             try:
                 winsound.Beep(1000, 600)
             except:
                 pass
-            self.iniciar_trabalho()
+            self.notificar("Pausa finalizada!", "Tela será bloqueada. Trabalho inicia ao desbloquear.")
+            bloquear_tela()
+            self._iniciar_trabalho_ao_desbloquear = True
+            self.tela_bloqueada = True
+            self.pausado = True
+            self._contagem_desbloqueio = 0
 
     def comecar_dia(self):
         hoje = str(date.today())
@@ -499,9 +694,22 @@ class PomodoroApp:
             if not messagebox.askyesno("Começar o Dia", "Isso vai zerar os ciclos de hoje. Continuar?"):
                 return
 
+        # Parar toda contagem ativa
+        self.modo_pomodoro = False
+        self.modo_pausa = False
+        self.pausado = False
+        self.tempo_restante = 0
+        self.fechar_tela_pausa()
+        self._iniciar_trabalho_ao_desbloquear = False
+        if self.job_id:
+            self.janela.after_cancel(self.job_id)
+            self.job_id = None
+
         self.ciclos_hoje = 0
+        self.ciclos_concluidos = 0
         self.tempo_trabalho_hoje = 0
         self.tempo_pausa_hoje = 0
+        self.tempo_total_pausa = 0
         self.stats = {"ultimo_dia": hoje, "ciclos_hoje": 0}
         salvar_stats(self.stats)
 
@@ -510,20 +718,28 @@ class PomodoroApp:
         self.atualizar_interface()
 
     def hora_almoco(self):
-        if not messagebox.askyesno("Hora do Almoço", "Iniciar pausa para almoço e criar evento no Calendar?"):
+        if not messagebox.askyesno("Hora do Almoço", "Bloquear tela para almoço? Trabalho inicia ao desbloquear."):
             return
+        # Parar qualquer contagem ativa
+        self.modo_pomodoro = False
+        self.modo_pausa = False
         self.pausado = True
-        self.mostrar_tela_pausa()
-        agora = datetime.now()
-        duracao = self.config["tempo_almoco"]
-        fim = agora + timedelta(minutes=duracao)
-        if self.service:
-            criar_evento_calendar(self.service, "Almoço", agora, fim, f"Pausa de {duracao} min para refeição")
-        self.notificar("Almoço", f"{duracao} minutos de pausa para almoço.")
-        self.tempo_restante = duracao * 60
-        self.modo_pausa = True
+        self.tempo_restante = 0
+        self.tempo_total_pausa = 0
+        self.fechar_tela_pausa()
         self.atualizar_interface()
-        self.atualizar_tempo()
+        # Registrar evento no Calendar se disponivel
+        if self.service:
+            agora = datetime.now()
+            fim = agora + timedelta(minutes=60)
+            criar_evento_calendar(self.service, "Almoço", agora, fim, "Pausa para refeição")
+        log("Hora do almoço. Tela bloqueada. Trabalho inicia ao desbloquear.")
+        self.notificar("Hora do Almoço", "Tela será bloqueada. Trabalho inicia ao desbloquear.")
+        # Bloquear tela e preparar auto-start
+        bloquear_tela()
+        self._iniciar_trabalho_ao_desbloquear = True
+        self.tela_bloqueada = True
+        self._contagem_desbloqueio = 0
 
     def finalizar_dia(self):
         if not messagebox.askyesno("Finalizar o Dia", "Salvar stats, criar resumo no Calendar e zerar?"):
@@ -537,6 +753,16 @@ class PomodoroApp:
             fim = agora + timedelta(hours=1)
             descricao = f"Resumo: {self.ciclos_hoje} ciclos | {trabalho_min} min trabalhados | {pausa_min} min pausas"
             criar_evento_calendar(self.service, "Resumo do Dia - Pomodoro", agora, fim, descricao)
+        # Parar toda contagem ativa
+        self.modo_pomodoro = False
+        self.modo_pausa = False
+        self.pausado = False
+        self.tempo_restante = 0
+        self.fechar_tela_pausa()
+        self._iniciar_trabalho_ao_desbloquear = False
+        if self.job_id:
+            self.janela.after_cancel(self.job_id)
+            self.job_id = None
         self.comecar_dia()  # Zera contadores
         self.notificar("Fim do Dia", "Jornada finalizada e salva!")
         log("Dia finalizado.")
@@ -615,8 +841,13 @@ class PomodoroApp:
         labels = ['Trabalho', 'Pausa']
         sizes = [total_trab, total_pausa]
         colors = ['#00FF7F', '#FFD700']
-        ax2.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-        ax2.set_title("Distribuição de Tempo", color="white")
+        if sum(sizes) > 0:
+            ax2.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            ax2.set_title("Distribuição de Tempo", color="white")
+        else:
+            ax2.text(0.5, 0.5, "Sem dados de tempo registados", ha='center', va='center',
+                     fontsize=14, color='white', transform=ax2.transAxes)
+            ax2.set_title("Distribuição de Tempo", color="white")
         fig2.patch.set_facecolor("#1C1C28")
 
         canvas2 = FigureCanvasTkAgg(fig2, frame2)
@@ -676,7 +907,7 @@ class PomodoroApp:
             item("Finalizar o Dia", lambda icon, item: self.finalizar_dia()),
             item("Estatísticas", lambda icon, item: self.mostrar_estatisticas()),
             item("Gráficos", lambda icon, item: self.mostrar_graficos()),
-            item("Bloquear Tela (Ctrl+L)", lambda icon, item: bloquear_tela()),
+            item("Bloquear Tela (Ctrl+L)", lambda icon, item: self.bloquear_e_pausar()),
             item("Sair", lambda icon, item: self.sair())
         )
 
