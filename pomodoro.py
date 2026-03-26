@@ -252,13 +252,21 @@ def bloquear_tela():
 
 def is_session_locked():
     """Verifica se a sessao do Windows esta bloqueada (Win+L).
-    Usa OpenInputDesktop - retorna None/0 quando a tela esta no desktop seguro (bloqueada)."""
+    Usa OpenInputDesktop e GetForegroundWindow para deteccao mais fiavel."""
     try:
+        # Metodo 1: OpenInputDesktop - retorna 0 quando no desktop seguro
         hDesktop = ctypes.windll.user32.OpenInputDesktop(0, 0, 0x0001)
         if hDesktop != 0:
             ctypes.windll.user32.CloseDesktop(hDesktop)
-            return False
-        return True
+        else:
+            return True
+
+        # Metodo 2: GetForegroundWindow - retorna 0 quando a tela esta bloqueada
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if hwnd == 0:
+            return True
+
+        return False
     except Exception:
         return False
 
@@ -314,8 +322,8 @@ class PomodoroApp:
     def criar_janela(self):
         self.janela = tk.Tk()
         self.janela.title("Pomodoro Premium")
-        self.janela.geometry("300x520")
-        self.janela.resizable(False, False)
+        self.janela.geometry("300x620")
+        self.janela.resizable(False, True)
         self.janela.configure(bg="#1C1C28")
         self.janela.attributes("-topmost", True)
 
@@ -348,15 +356,31 @@ class PomodoroApp:
 
         self.janela.protocol("WM_DELETE_WINDOW", self.janela.withdraw)
         self.janela.bind("<Control-l>", lambda e: self.bloquear_e_pausar())
+
+        # Registrar hotkey global Ctrl+L para funcionar mesmo com outra janela em foco
+        if TECLADO_GLOBAL:
+            try:
+                keyboard.add_hotkey('ctrl+l', self._global_ctrl_l_handler)
+                log("Hotkey global Ctrl+L registrada.")
+            except Exception as e:
+                log(f"Falha ao registrar hotkey global Ctrl+L: {e}")
+
         return self.janela
 
+    def _global_ctrl_l_handler(self):
+        """Handler para hotkey global Ctrl+L. Executa diretamente (thread-safe via GIL)."""
+        self.bloquear_e_pausar()
+
     def bloquear_e_pausar(self):
-        """Bloqueia a tela e pausa o contador."""
-        self.pausado = True
+        """Bloqueia a tela. Pausa o contador apenas durante trabalho."""
         self.tela_bloqueada = True
         self._contagem_desbloqueio = 0
+        if self.modo_pomodoro:
+            self.pausado = True
+            log("Tela bloqueada via Ctrl+L. Contador de trabalho pausado.")
+        else:
+            log("Tela bloqueada via Ctrl+L. Contador de pausa continua.")
         bloquear_tela()
-        log("Tela bloqueada via Ctrl+L. Contador pausado.")
 
     def atualizar_tempo(self):
         if self.job_id:
@@ -374,18 +398,26 @@ class PomodoroApp:
         tela_agora_bloqueada = is_session_locked()
         if tela_agora_bloqueada and not self.tela_bloqueada:
             self.tela_bloqueada = True
-            self.pausado = True
             self._contagem_desbloqueio = 0
-            log("Tela bloqueada detectada. Contagem pausada automaticamente.")
+            if self.modo_pomodoro:
+                self.pausado = True
+                log("Tela bloqueada detectada durante trabalho. Contagem pausada.")
+            elif self.modo_pausa:
+                log("Tela bloqueada detectada durante pausa. Contagem continua.")
+            else:
+                log("Tela bloqueada detectada.")
         elif tela_agora_bloqueada and self.tela_bloqueada:
             self._contagem_desbloqueio = 0
         elif not tela_agora_bloqueada and self.tela_bloqueada:
             self._contagem_desbloqueio += 1
             if self._contagem_desbloqueio >= 10:
                 self.tela_bloqueada = False
-                self.pausado = False
                 self._contagem_desbloqueio = 0
-                log("Tela desbloqueada. Contagem retomada.")
+                if self.modo_pomodoro:
+                    self.pausado = False
+                    log("Tela desbloqueada. Contagem de trabalho retomada.")
+                else:
+                    log("Tela desbloqueada.")
                 self.fechar_tela_pausa()
                 if self._iniciar_trabalho_ao_desbloquear:
                     self._iniciar_trabalho_ao_desbloquear = False
@@ -671,7 +703,7 @@ class PomodoroApp:
             self.notificar("Fim do trabalho!", f"Ciclo {self.ciclos_hoje} do dia concluído! Pausa iniciada.")
             self.iniciar_pausa()
         elif self.modo_pausa:
-            log("Pausa finalizada. Bloqueando tela.")
+            log("Pausa finalizada.")
             self.fechar_tela_pausa()
             self.modo_pausa = False
             self.tempo_restante = 0
@@ -681,12 +713,29 @@ class PomodoroApp:
                 winsound.Beep(1000, 600)
             except:
                 pass
-            self.notificar("Pausa finalizada!", "Tela será bloqueada. Trabalho inicia ao desbloquear.")
+            if self.tela_bloqueada:
+                # Tela ja esta bloqueada (usuario bloqueou durante a pausa)
+                # Apenas preparar para iniciar trabalho ao desbloquear
+                self._iniciar_trabalho_ao_desbloquear = True
+                self.pausado = True
+                self.notificar("Pausa finalizada!", "Trabalho inicia ao desbloquear.")
+                log("Pausa finalizada com tela ja bloqueada. Trabalho inicia ao desbloquear.")
+            else:
+                # Tela desbloqueada - esperar alguns segundos antes de bloquear
+                self.notificar("Pausa finalizada!", "Tela será bloqueada em 5 segundos. Trabalho inicia ao desbloquear.")
+                log("Pausa finalizada. Bloqueio agendado em 5 segundos.")
+                self.janela.after(5000, self._bloquear_apos_pausa)
+
+    def _bloquear_apos_pausa(self):
+        """Bloqueia a tela apos o delay quando a pausa termina."""
+        # So bloquear se nenhum periodo de trabalho foi iniciado manualmente
+        if not self.modo_pomodoro:
             bloquear_tela()
             self._iniciar_trabalho_ao_desbloquear = True
             self.tela_bloqueada = True
             self.pausado = True
             self._contagem_desbloqueio = 0
+            log("Tela bloqueada apos delay da pausa.")
 
     def comecar_dia(self):
         hoje = str(date.today())
@@ -928,6 +977,12 @@ class PomodoroApp:
 
         self.rodando = False
         self.fechar_tela_pausa()
+        # Remover hotkey global Ctrl+L
+        if TECLADO_GLOBAL:
+            try:
+                keyboard.remove_hotkey('ctrl+l')
+            except:
+                pass
         if self.job_id:
             try:
                 self.janela.after_cancel(self.job_id)
