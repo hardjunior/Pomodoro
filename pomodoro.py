@@ -71,6 +71,12 @@ class MONITORINFOEX(ctypes.Structure):
         ("szDevice", wintypes.WCHAR * 32)
     ]
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
 # ==============================
 # TECLADO GLOBAL
 # ==============================
@@ -270,6 +276,27 @@ def is_session_locked():
     except Exception:
         return False
 
+def obter_posicao_mouse():
+    """Obtém a posição atual do rato para detectar atividade após a pausa."""
+    try:
+        ponto = POINT()
+        if user32.GetCursorPos(ctypes.byref(ponto)):
+            return (ponto.x, ponto.y)
+    except Exception:
+        pass
+    return None
+
+def obter_ultima_atividade_usuario():
+    """Obtém o tick da última atividade do utilizador (rato ou teclado)."""
+    try:
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if user32.GetLastInputInfo(ctypes.byref(info)):
+            return int(info.dwTime)
+    except Exception:
+        pass
+    return None
+
 # ==============================
 # CLASSE PRINCIPAL
 # ==============================
@@ -297,6 +324,15 @@ class PomodoroApp:
         self.tela_bloqueada = False
         self._contagem_desbloqueio = 0
         self._iniciar_trabalho_ao_desbloquear = False
+        self._pausado_por_bloqueio = False
+        self._pausa_liberada_emergencia = False
+        self._aguardando_retorno_apos_pausa = False
+        self._deadline_retorno_apos_pausa = None
+        self._posicao_mouse_apos_pausa = None
+        self._ultima_atividade_apos_pausa = None
+        self._ultimo_movimento_pausa = None
+        self._posicao_mouse_pausa = None
+        self._ultima_atividade_pausa = None
         self.service = None
         if self.config["integrar_calendar"] and os.path.exists(CREDENTIALS_FILE):
             try:
@@ -377,6 +413,7 @@ class PomodoroApp:
         self._contagem_desbloqueio = 0
         if self.modo_pomodoro:
             self.pausado = True
+            self._pausado_por_bloqueio = True
             log("Tela bloqueada via Ctrl+L. Contador de trabalho pausado.")
         else:
             log("Tela bloqueada via Ctrl+L. Contador de pausa continua.")
@@ -401,6 +438,7 @@ class PomodoroApp:
             self._contagem_desbloqueio = 0
             if self.modo_pomodoro:
                 self.pausado = True
+                self._pausado_por_bloqueio = True
                 log("Tela bloqueada detectada durante trabalho. Contagem pausada.")
             elif self.modo_pausa:
                 log("Tela bloqueada detectada durante pausa. Contagem continua.")
@@ -410,20 +448,42 @@ class PomodoroApp:
             self._contagem_desbloqueio = 0
         elif not tela_agora_bloqueada and self.tela_bloqueada:
             self._contagem_desbloqueio += 1
-            if self._contagem_desbloqueio >= 10:
+            limite_desbloqueio = 2 if self._iniciar_trabalho_ao_desbloquear else 1
+            if self._contagem_desbloqueio >= limite_desbloqueio:
                 self.tela_bloqueada = False
                 self._contagem_desbloqueio = 0
-                if self.modo_pomodoro:
+                if self.modo_pomodoro and self._pausado_por_bloqueio:
                     self.pausado = False
+                    self._pausado_por_bloqueio = False
                     log("Tela desbloqueada. Contagem de trabalho retomada.")
                 else:
                     log("Tela desbloqueada.")
                 self.fechar_tela_pausa()
                 if self._iniciar_trabalho_ao_desbloquear:
+                    log("Desbloqueio detectado. Trabalho iniciado automaticamente.")
                     self._iniciar_trabalho_ao_desbloquear = False
                     self.iniciar_trabalho()
+                    return
 
-        if self.rodando and self.tempo_restante > 0 and not self.pausado:
+        self._monitorar_inatividade_pausa()
+
+        if self._aguardando_retorno_apos_pausa and not self.tela_bloqueada:
+            pos_atual = obter_posicao_mouse()
+            atividade_atual = obter_ultima_atividade_usuario()
+            houve_movimento_rato = self._posicao_mouse_apos_pausa and pos_atual and pos_atual != self._posicao_mouse_apos_pausa
+            houve_atividade_pc = self._ultima_atividade_apos_pausa is not None and atividade_atual is not None and atividade_atual != self._ultima_atividade_apos_pausa
+            if houve_movimento_rato or houve_atividade_pc:
+                log("Atividade detectada após a pausa. Trabalho iniciado automaticamente.")
+                self._cancelar_aguardo_apos_pausa()
+                self.iniciar_trabalho()
+                return
+            if self._deadline_retorno_apos_pausa and time.monotonic() >= self._deadline_retorno_apos_pausa:
+                self._bloquear_apos_pausa()
+
+        if self.modo_pomodoro and self.tela_bloqueada:
+            self.pausado = True
+
+        if self.rodando and self.tempo_restante > 0 and not self.pausado and not self.tela_bloqueada:
             self.tempo_restante -= 1
             if self.modo_pomodoro:
                 self.tempo_trabalho_hoje += 1
@@ -441,9 +501,10 @@ class PomodoroApp:
         texto = f"{mins:02d}:{secs:02d}"
         if self.label_tempo:
             self.label_tempo.config(text=texto)
+        modo = "TRABALHO" if self.modo_pomodoro else "PAUSA" if self.modo_pausa else "PARADO"
         if self.icone:
             self.icone.icon = self.criar_icone_progresso(self.calcular_progresso())
-        modo = "TRABALHO" if self.modo_pomodoro else "PAUSA"
+            self.icone.title = self.obter_texto_tray(modo, texto)
         trabalho_h = self.tempo_trabalho_hoje // 3600
         trabalho_m = (self.tempo_trabalho_hoje % 3600) // 60
         self.label_ciclos.config(text=f"Ciclos hoje: {self.ciclos_hoje} | {trabalho_h}h {trabalho_m}m")
@@ -459,17 +520,19 @@ class PomodoroApp:
         return max(0, min(1, 1 - (self.tempo_restante / total))) if total > 0 else 0
 
     def desbloquear_emergencia(self):
-        log("TECLA SECRETA ATIVADA: Pausa desbloqueada!")
+        log("TECLA SECRETA ATIVADA: Tela da pausa desativada até ao fim desta pausa.")
+        self._pausa_liberada_emergencia = True
         self.fechar_tela_pausa()
         self.pausado = False
         self.tela_bloqueada = False
+        self._pausado_por_bloqueio = False
         self._contagem_desbloqueio = 0
         self._iniciar_trabalho_ao_desbloquear = False
         self.atualizar_tempo()
-        self.notificar("EMERGÊNCIA", "Pausa desbloqueada!")
+        self.notificar("EMERGÊNCIA", "Tela da pausa desativada nesta pausa.")
 
     def mostrar_tela_pausa(self):
-        if not self.config["bloquear_pausa"] or self.tela_pausas:
+        if not self.config["bloquear_pausa"] or self.tela_pausas or self.pausado or not self.modo_pausa or self._pausa_liberada_emergencia:
             return
 
         monitores = []
@@ -624,6 +687,10 @@ class PomodoroApp:
         self.atualizar_interface()
 
     def iniciar_trabalho(self):
+        self._cancelar_aguardo_apos_pausa()
+        self._iniciar_trabalho_ao_desbloquear = False
+        self._pausado_por_bloqueio = False
+        self._pausa_liberada_emergencia = False
         self.modo_pomodoro = True
         self.modo_pausa = False
         self.pausado = False
@@ -639,6 +706,8 @@ class PomodoroApp:
         self.atualizar_interface()
 
     def iniciar_pausa(self):
+        self._cancelar_aguardo_apos_pausa()
+        self._pausa_liberada_emergencia = False
         self.modo_pomodoro = False
         self.modo_pausa = True
         if self.ciclos_concluidos > 0 and self.ciclos_concluidos % self.config["ciclos_para_pausa_longa"] == 0:
@@ -648,6 +717,9 @@ class PomodoroApp:
             self.tempo_restante = self.config["pausa_curta"] * 60
             tipo = "curta"
         self.tempo_total_pausa = self.tempo_restante
+        self.tela_bloqueada = False
+        self._contagem_desbloqueio = 0
+        self._reiniciar_monitoramento_pausa()
         if self.service:
             agora = datetime.now()
             fim = agora + timedelta(minutes=self.tempo_restante//60)
@@ -664,11 +736,12 @@ class PomodoroApp:
             self.tela_bloqueada = False
             self._contagem_desbloqueio = 0
             self._iniciar_trabalho_ao_desbloquear = False
+        self._pausado_por_bloqueio = False
+        self._cancelar_aguardo_apos_pausa()
         self.pausado = not self.pausado
-        if self.pausado:
+        self.fechar_tela_pausa()
+        if not self.pausado and self.modo_pausa:
             self.mostrar_tela_pausa()
-        else:
-            self.fechar_tela_pausa()
         estado = "Pausado" if self.pausado else "Retomado"
         log(f"Cronômetro {estado}.")
         self.notificar("Pomodoro", f"Cronômetro {estado.lower()}.")
@@ -705,6 +778,7 @@ class PomodoroApp:
         elif self.modo_pausa:
             log("Pausa finalizada.")
             self.fechar_tela_pausa()
+            self._pausa_liberada_emergencia = False
             self.modo_pausa = False
             self.tempo_restante = 0
             self.tempo_total_pausa = 0
@@ -714,30 +788,67 @@ class PomodoroApp:
             except:
                 pass
             if self.tela_bloqueada:
-                # Tela ja esta bloqueada (usuario bloqueou durante a pausa)
-                # Apenas preparar para iniciar trabalho ao desbloquear
+                # Tela ja está bloqueada (utilizador ficou inativo durante a pausa)
                 self._iniciar_trabalho_ao_desbloquear = True
                 self.pausado = True
                 self.notificar("Pausa finalizada!", "Trabalho inicia ao desbloquear.")
-                log("Pausa finalizada com tela ja bloqueada. Trabalho inicia ao desbloquear.")
+                log("Pausa finalizada com tela bloqueada. Trabalho inicia ao desbloquear.")
             else:
-                # Tela desbloqueada - esperar alguns segundos antes de bloquear
-                self.notificar("Pausa finalizada!", "Tela será bloqueada em 5 segundos. Trabalho inicia ao desbloquear.")
-                log("Pausa finalizada. Bloqueio agendado em 5 segundos.")
-                self.janela.after(5000, self._bloquear_apos_pausa)
+                self._aguardar_retorno_apos_pausa()
+            self.atualizar_tempo()
+
+    def _reiniciar_monitoramento_pausa(self):
+        self._ultimo_movimento_pausa = time.monotonic()
+        self._posicao_mouse_pausa = obter_posicao_mouse()
+        self._ultima_atividade_pausa = obter_ultima_atividade_usuario()
+
+    def _monitorar_inatividade_pausa(self):
+        """Mantém a tela de pausa visível durante o descanso, sem insistir após desbloqueio de emergência."""
+        if self._pausa_liberada_emergencia:
+            if self.tela_pausas:
+                self.fechar_tela_pausa()
+            return
+
+        if self.modo_pausa and not self.pausado and self.config.get("bloquear_pausa"):
+            if not self.tela_pausas:
+                self.mostrar_tela_pausa()
+        elif self.tela_pausas and (not self.modo_pausa or self.pausado):
+            self.fechar_tela_pausa()
+
+    def _cancelar_aguardo_apos_pausa(self):
+        self._aguardando_retorno_apos_pausa = False
+        self._deadline_retorno_apos_pausa = None
+        self._posicao_mouse_apos_pausa = None
+        self._ultima_atividade_apos_pausa = None
+        self._ultimo_movimento_pausa = None
+        self._posicao_mouse_pausa = None
+        self._ultima_atividade_pausa = None
+
+    def _aguardar_retorno_apos_pausa(self):
+        """Aguarda até 5 segundos por atividade antes de bloquear a tela."""
+        self._aguardando_retorno_apos_pausa = True
+        self._deadline_retorno_apos_pausa = time.monotonic() + 5
+        self._posicao_mouse_apos_pausa = obter_posicao_mouse()
+        self._ultima_atividade_apos_pausa = obter_ultima_atividade_usuario()
+        log("Pausa finalizada. Aguardando atividade por 5 segundos.")
+        self.notificar("Pausa finalizada!", "Mexa no rato ou teclado em até 5 segundos para iniciar o trabalho automaticamente.")
+        self.atualizar_tempo()
 
     def _bloquear_apos_pausa(self):
-        """Bloqueia a tela apos o delay quando a pausa termina."""
-        # So bloquear se nenhum periodo de trabalho foi iniciado manualmente
-        if not self.modo_pomodoro:
-            bloquear_tela()
-            self._iniciar_trabalho_ao_desbloquear = True
-            self.tela_bloqueada = True
-            self.pausado = True
-            self._contagem_desbloqueio = 0
-            log("Tela bloqueada apos delay da pausa.")
+        """Bloqueia a tela após a pausa se não houver atividade do utilizador."""
+        if self.modo_pomodoro:
+            self._cancelar_aguardo_apos_pausa()
+            return
+        self._cancelar_aguardo_apos_pausa()
+        bloquear_tela()
+        self._iniciar_trabalho_ao_desbloquear = True
+        self.tela_bloqueada = True
+        self.pausado = True
+        self._contagem_desbloqueio = 0
+        log("Sem atividade após a pausa. Tela bloqueada.")
 
     def comecar_dia(self):
+        self._cancelar_aguardo_apos_pausa()
         hoje = str(date.today())
         if self.stats["ultimo_dia"] == hoje and self.ciclos_hoje > 0:
             if not messagebox.askyesno("Começar o Dia", "Isso vai zerar os ciclos de hoje. Continuar?"):
@@ -767,6 +878,7 @@ class PomodoroApp:
         self.atualizar_interface()
 
     def hora_almoco(self):
+        self._cancelar_aguardo_apos_pausa()
         if not messagebox.askyesno("Hora do Almoço", "Bloquear tela para almoço? Trabalho inicia ao desbloquear."):
             return
         # Parar qualquer contagem ativa
@@ -791,6 +903,7 @@ class PomodoroApp:
         self._contagem_desbloqueio = 0
 
     def finalizar_dia(self):
+        self._cancelar_aguardo_apos_pausa()
         if not messagebox.askyesno("Finalizar o Dia", "Salvar stats, criar resumo no Calendar e zerar?"):
             return
         hoje = str(date.today())
@@ -925,6 +1038,9 @@ class PomodoroApp:
         canvas3.draw()
         canvas3.get_tk_widget().pack(fill="both", expand=True)
 
+    def obter_texto_tray(self, modo, texto):
+        return f"Pomodoro Premium | {modo} | Restante: {texto}"
+
     def criar_icone_progresso(self, progresso):
         size = 64
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -967,6 +1083,7 @@ class PomodoroApp:
             self.janela.attributes("-topmost", True)
 
     def sair(self):
+        self._cancelar_aguardo_apos_pausa()
         hoje = str(date.today())
         registrar_sessao_diaria(
             data_str=hoje,
@@ -998,7 +1115,7 @@ class PomodoroApp:
         criar_config_padrao()
         self.config = carregar_config()
 
-        self.icone = pystray.Icon("PomodoroTray", self.criar_icone_progresso(0), "Pomodoro Premium", self.criar_menu())
+        self.icone = pystray.Icon("PomodoroTray", self.criar_icone_progresso(0), self.obter_texto_tray("PARADO", "00:00"), self.criar_menu())
         threading.Thread(target=self.icone.run, daemon=True).start()
 
         if self.config["mostrar_janela"]:
