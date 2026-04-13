@@ -393,18 +393,18 @@ class PomodoroApp:
         self.janela.protocol("WM_DELETE_WINDOW", self.janela.withdraw)
         self.janela.bind("<Control-l>", lambda e: self.bloquear_e_pausar())
 
-        # Registrar hotkey global Ctrl+L para funcionar mesmo com outra janela em foco
+        # Registrar hotkey global win+l para funcionar mesmo com outra janela em foco
         if TECLADO_GLOBAL:
             try:
-                keyboard.add_hotkey('ctrl+l', self._global_ctrl_l_handler)
-                log("Hotkey global Ctrl+L registrada.")
+                keyboard.add_hotkey('Win+L', self._global_ctrl_l_handler)
+                log("Hotkey global Win+L registrada.")
             except Exception as e:
-                log(f"Falha ao registrar hotkey global Ctrl+L: {e}")
+                log(f"Falha ao registrar hotkey global Win+L: {e}")
 
         return self.janela
 
     def _global_ctrl_l_handler(self):
-        """Handler para hotkey global Ctrl+L. Executa diretamente (thread-safe via GIL)."""
+        """Handler para hotkey global Win+L. Executa diretamente (thread-safe via GIL)."""
         self.bloquear_e_pausar()
 
     def bloquear_e_pausar(self):
@@ -414,9 +414,9 @@ class PomodoroApp:
         if self.modo_pomodoro:
             self.pausado = True
             self._pausado_por_bloqueio = True
-            log("Tela bloqueada via Ctrl+L. Contador de trabalho pausado.")
+            log("Tela bloqueada via Win+L. Contador de trabalho pausado.")
         else:
-            log("Tela bloqueada via Ctrl+L. Contador de pausa continua.")
+            log("Tela bloqueada via Win+L. Contador de pausa continua.")
         bloquear_tela()
 
     def atualizar_tempo(self):
@@ -1072,7 +1072,7 @@ class PomodoroApp:
             item("Finalizar o Dia", lambda icon, item: self.finalizar_dia()),
             item("Estatísticas", lambda icon, item: self.mostrar_estatisticas()),
             item("Gráficos", lambda icon, item: self.mostrar_graficos()),
-            item("Bloquear Tela (Ctrl+L)", lambda icon, item: self.bloquear_e_pausar()),
+            item("Bloquear Tela (Win+L)", lambda icon, item: self.bloquear_e_pausar()),
             item("Sair", lambda icon, item: self.sair())
         )
 
@@ -1094,10 +1094,10 @@ class PomodoroApp:
 
         self.rodando = False
         self.fechar_tela_pausa()
-        # Remover hotkey global Ctrl+L
+        # Remover hotkey global Win+L
         if TECLADO_GLOBAL:
             try:
-                keyboard.remove_hotkey('ctrl+l')
+                keyboard.remove_hotkey('win+l')
             except:
                 pass
         if self.job_id:
