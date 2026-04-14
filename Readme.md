@@ -3,33 +3,35 @@
 **Foco total. Pausas obrigatórias. Bloqueio em TODOS os monitores.**
 
 Um timer Pomodoro **avançado** com:
+
 - Janela sempre no topo
 - Ícone na bandeja com progresso
 - **Bloqueio total em múltiplos monitores**
+- **Monitor mantido ligado durante a pausa**
 - **Tecla secreta para emergência: `<Ctrl + Alt + Shift + Q>`**
-- `<Ctrl + L>` bloqueia o Windows
+- `<Win + L>` bloqueia o Windows
 - Totalmente personalizável
 
 ---
 
 ## Recursos
 
-| Recurso | Status |
-|--------|--------|
-| Timer 25/5 (personalizável) | Done |
-| Ícone na bandeja com progresso | Done |
-| Janela sempre no topo | Done |
-| Ícone na barra de tarefas | Done |
-| **Bloqueio em TODOS os monitores** | Done |
-| **Tecla secreta (Ctrl+Alt+Shift+Q)** | Done |
-| `<Ctrl + L>` bloqueia Windows | Done |
-| Pausa curta/longa automática | Done |
-| Notificações + som | Done |
-| **Gráficos com Matplotlib** | Done |
-| **Integração com Google Calendar** | Done |
-| **Integração com Telegram** | Done |
-| **Botão "Hora do Almoço"** | Done |
-| **Botão "Finalizar o Dia"** | Done |
+| Recurso                              | Status |
+| ------------------------------------ | ------ |
+| Timer 25/5 (personalizável)          | Done   |
+| Ícone na bandeja com progresso       | Done   |
+| Janela sempre no topo                | Done   |
+| Ícone na barra de tarefas            | Done   |
+| **Bloqueio em TODOS os monitores**   | Done   |
+| **Tecla secreta (Ctrl+Alt+Shift+Q)** | Done   |
+| `<Win + L>` bloqueia Windows         | Done   |
+| Pausa curta/longa automática         | Done   |
+| Notificações + som                   | Done   |
+| **Gráficos com Matplotlib**          | Done   |
+| **Integração com Google Calendar**   | Done   |
+| **Integração com Telegram**          | Done   |
+| **Botão "Hora do Almoço"**           | Done   |
+| **Botão "Finalizar o Dia"**          | Done   |
 
 ---
 
@@ -98,6 +100,7 @@ O Pomodoro cria eventos automáticos no seu Google Calendar (ex: "Pomodoro: Foco
    - O `token.json` é gerado automaticamente na pasta.
 
 > **Dicas:**
+>
 > - Se erro "Acesso bloqueado": Adicione seu e-mail como test user no OAuth consent screen.
 > - Para uso público: Submeta para verificação no Google (leva 4-6 semanas).
 > - Docs oficiais: [developers.google.com/calendar/api/quickstart/python](https://developers.google.com/calendar/api/quickstart/python).
@@ -146,6 +149,7 @@ pip install -r requirements.txt
 ```
 
 > `requirements.txt`:
+
 ```txt
 PyStray==0.19.5
 Pillow==10.4.0
@@ -181,12 +185,13 @@ python pomodoro.py
 
 3. **Durante a pausa:**
    - **TODOS os monitores ficam pretos**
+   - **O Windows é instruído a não desligar o monitor por inatividade**
    - **Mouse bloqueado**
    - **Teclas normais bloqueadas**
 
 4. **Emergência:**
    - `<Ctrl + Alt + Shift + Q>` → desbloqueia (tecla secreta)
-   - `<Ctrl + L>` → bloqueia o Windows
+   - `<Win + L>` → bloqueia o Windows
 
 ---
 
@@ -224,9 +229,9 @@ chat_id = SEU_CHAT_ID         # Chat ID do Telegram
 
 ## Ficheiros de Exemplo
 
-| Ficheiro | Descrição |
-|----------|-----------|
-| `config.ini.example` | Exemplo completo do `config.ini` com todas as opções e valores padrão. Copie para `config.ini` e personalize. |
+| Ficheiro                   | Descrição                                                                                                             |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `config.ini.example`       | Exemplo completo do `config.ini` com todas as opções e valores padrão. Copie para `config.ini` e personalize.         |
 | `credentials.json.example` | Estrutura esperada do ficheiro de credenciais do Google Calendar. Substitua pelos seus dados do Google Cloud Console. |
 
 > **Nota:** O `token.json` é gerado **automaticamente** pela aplicação na primeira vez que faz login no Google Calendar. Não precisa de criar este ficheiro manualmente.
@@ -235,11 +240,11 @@ chat_id = SEU_CHAT_ID         # Chat ID do Telegram
 
 ## Teclas de Atalho
 
-| Atalho | Função |
-|--------|--------|
+| Atalho                     | Função                         |
+| -------------------------- | ------------------------------ |
 | `<Ctrl + Alt + Shift + Q>` | Desbloqueia pausa (emergência) |
-| `<Ctrl + L>` | Bloqueia Windows |
-| Clique na bandeja | Mostra menu |
+| `<Win + L>`                | Bloqueia Windows               |
+| Clique na bandeja          | Mostra menu                    |
 
 ---
 
@@ -256,13 +261,13 @@ pyinstaller --onefile --windowed --icon=pomodoro.ico pomodoro.py
 
 ## Logs e Dados
 
-| Ficheiro | Descrição |
-|----------|-----------|
-| `pomodoro.log` | Registo de eventos da aplicação |
-| `config.ini` | Configurações personalizáveis |
-| `pomodoro.db` | Estatísticas guardadas (SQLite) |
-| `stats.json` | Estatísticas do dia atual |
-| `token.json` | Token OAuth do Google Calendar (auto-gerado) |
+| Ficheiro       | Descrição                                    |
+| -------------- | -------------------------------------------- |
+| `pomodoro.log` | Registo de eventos da aplicação              |
+| `config.ini`   | Configurações personalizáveis                |
+| `pomodoro.db`  | Estatísticas guardadas (SQLite)              |
+| `stats.json`   | Estatísticas do dia atual                    |
+| `token.json`   | Token OAuth do Google Calendar (auto-gerado) |
 
 ---
 
@@ -287,4 +292,4 @@ pyinstaller --onefile --windowed --icon=pomodoro.ico pomodoro.py
 
 **Foco sem distrações. Pausa obrigatória.**
 
-> *"Se não bloquear, não é foco."*
+> _"Se não bloquear, não é foco."_

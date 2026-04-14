@@ -57,6 +57,11 @@ except Exception:
 # WINDOWS API
 # ==============================
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
 
 class RECT(ctypes.Structure):
     _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
@@ -333,6 +338,10 @@ class PomodoroApp:
         self._ultimo_movimento_pausa = None
         self._posicao_mouse_pausa = None
         self._ultima_atividade_pausa = None
+        self._energia_estado_event = threading.Event()
+        self._energia_stop_event = threading.Event()
+        self._thread_energia = threading.Thread(target=self._loop_estado_energia, daemon=True)
+        self._thread_energia.start()
         self.service = None
         if self.config["integrar_calendar"] and os.path.exists(CREDENTIALS_FILE):
             try:
@@ -417,6 +426,7 @@ class PomodoroApp:
             log("Tela bloqueada via Win+L. Contador de trabalho pausado.")
         else:
             log("Tela bloqueada via Win+L. Contador de pausa continua.")
+        self._sinalizar_atualizacao_energia()
         bloquear_tela()
 
     def atualizar_tempo(self):
@@ -444,6 +454,7 @@ class PomodoroApp:
                 log("Tela bloqueada detectada durante pausa. Contagem continua.")
             else:
                 log("Tela bloqueada detectada.")
+            self._sinalizar_atualizacao_energia()
         elif tela_agora_bloqueada and self.tela_bloqueada:
             self._contagem_desbloqueio = 0
         elif not tela_agora_bloqueada and self.tela_bloqueada:
@@ -459,6 +470,7 @@ class PomodoroApp:
                 else:
                     log("Tela desbloqueada.")
                 self.fechar_tela_pausa()
+                self._sinalizar_atualizacao_energia()
                 if self._iniciar_trabalho_ao_desbloquear:
                     log("Desbloqueio detectado. Trabalho iniciado automaticamente.")
                     self._iniciar_trabalho_ao_desbloquear = False
@@ -528,8 +540,40 @@ class PomodoroApp:
         self._pausado_por_bloqueio = False
         self._contagem_desbloqueio = 0
         self._iniciar_trabalho_ao_desbloquear = False
+        self._sinalizar_atualizacao_energia()
         self.atualizar_tempo()
         self.notificar("EMERGÊNCIA", "Tela da pausa desativada nesta pausa.")
+
+    def _deve_impedir_suspensao_monitor(self):
+        return self.rodando and self.modo_pausa and not self.pausado and not self.tela_bloqueada and self.tempo_restante > 0
+
+    def _sinalizar_atualizacao_energia(self):
+        self._energia_estado_event.set()
+
+    def _loop_estado_energia(self):
+        estado_ativo = False
+        while not self._energia_stop_event.is_set():
+            self._energia_estado_event.wait(timeout=20 if estado_ativo else 2)
+            self._energia_estado_event.clear()
+
+            deve_manter_monitor = self._deve_impedir_suspensao_monitor()
+            if deve_manter_monitor:
+                resultado = kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                )
+                if resultado and not estado_ativo:
+                    log("Economia de energia suspensa durante a pausa para manter o monitor ligado.")
+                    estado_ativo = True
+                elif not resultado and estado_ativo:
+                    estado_ativo = False
+                    log("Falha ao renovar a prevenção de suspensão do monitor durante a pausa.")
+            elif estado_ativo:
+                kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+                estado_ativo = False
+                log("Economia de energia restaurada após a pausa.")
+
+        if estado_ativo:
+            kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 
     def mostrar_tela_pausa(self):
         if not self.config["bloquear_pausa"] or self.tela_pausas or self.pausado or not self.modo_pausa or self._pausa_liberada_emergencia:
@@ -672,6 +716,7 @@ class PomodoroApp:
         self.tempo_restante = 0
         self.fechar_tela_pausa()
         self._iniciar_trabalho_ao_desbloquear = False
+        self._sinalizar_atualizacao_energia()
 
         # Zerar contadores para novo dia
         self.ciclos_hoje = 0
@@ -696,6 +741,7 @@ class PomodoroApp:
         self.pausado = False
         self.fechar_tela_pausa()
         self.tempo_restante = self.config["trabalho"] * 60
+        self._sinalizar_atualizacao_energia()
         if self.service:
             agora = datetime.now()
             fim = agora + timedelta(minutes=self.config["trabalho"])
@@ -720,6 +766,7 @@ class PomodoroApp:
         self.tela_bloqueada = False
         self._contagem_desbloqueio = 0
         self._reiniciar_monitoramento_pausa()
+        self._sinalizar_atualizacao_energia()
         if self.service:
             agora = datetime.now()
             fim = agora + timedelta(minutes=self.tempo_restante//60)
@@ -742,6 +789,7 @@ class PomodoroApp:
         self.fechar_tela_pausa()
         if not self.pausado and self.modo_pausa:
             self.mostrar_tela_pausa()
+        self._sinalizar_atualizacao_energia()
         estado = "Pausado" if self.pausado else "Retomado"
         log(f"Cronômetro {estado}.")
         self.notificar("Pomodoro", f"Cronômetro {estado.lower()}.")
@@ -782,6 +830,7 @@ class PomodoroApp:
             self.modo_pausa = False
             self.tempo_restante = 0
             self.tempo_total_pausa = 0
+            self._sinalizar_atualizacao_energia()
             self.atualizar_interface()
             try:
                 winsound.Beep(1000, 600)
@@ -845,6 +894,7 @@ class PomodoroApp:
         self.tela_bloqueada = True
         self.pausado = True
         self._contagem_desbloqueio = 0
+        self._sinalizar_atualizacao_energia()
         log("Sem atividade após a pausa. Tela bloqueada.")
 
     def comecar_dia(self):
@@ -861,6 +911,7 @@ class PomodoroApp:
         self.tempo_restante = 0
         self.fechar_tela_pausa()
         self._iniciar_trabalho_ao_desbloquear = False
+        self._sinalizar_atualizacao_energia()
         if self.job_id:
             self.janela.after_cancel(self.job_id)
             self.job_id = None
@@ -888,6 +939,7 @@ class PomodoroApp:
         self.tempo_restante = 0
         self.tempo_total_pausa = 0
         self.fechar_tela_pausa()
+        self._sinalizar_atualizacao_energia()
         self.atualizar_interface()
         # Registrar evento no Calendar se disponivel
         if self.service:
@@ -922,6 +974,7 @@ class PomodoroApp:
         self.tempo_restante = 0
         self.fechar_tela_pausa()
         self._iniciar_trabalho_ao_desbloquear = False
+        self._sinalizar_atualizacao_energia()
         if self.job_id:
             self.janela.after_cancel(self.job_id)
             self.job_id = None
@@ -1094,6 +1147,9 @@ class PomodoroApp:
 
         self.rodando = False
         self.fechar_tela_pausa()
+        self._sinalizar_atualizacao_energia()
+        self._energia_stop_event.set()
+        self._thread_energia.join(timeout=1)
         # Remover hotkey global Win+L
         if TECLADO_GLOBAL:
             try:
