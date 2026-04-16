@@ -20,7 +20,7 @@ ativo = False
 token = SEU_TOKEN_DO_BOT_TELEGRAM
 chat_id = SEU_CHAT_ID
 
-[AppsTrabalho]
+[AppsInicioDia]
 ; Caminhos de aplicativos para abrir ao iniciar trabalho
 ; vscode = C:\Path\To\VSCode.exe
 ; chrome = C:\Path\To\Chrome.exe

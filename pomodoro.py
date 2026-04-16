@@ -211,8 +211,8 @@ def criar_config_padrao():
         config["Icone"] = {"arquivo": "pomodoro.ico"}
         config["Calendar"] = {"integrado": "True", "tempo_almoco": "60"}
         config["Telegram"] = {"ativo": "False", "token": "", "chat_id": ""}
-        config["AppsTrabalho"] = {
-            "; coloque os caminhos dos aplicativos ou ficheiros .bat que deseja executar": "",
+        config["AppsInicioDia"] = {
+            "; coloque os caminhos dos aplicativos ou ficheiros .bat que deseja executar ao começar o dia": "",
             "; vscode": r"C:\Path\To\Code.exe",
             "; chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         }
@@ -240,7 +240,7 @@ def carregar_config():
         "telegram_ativo": telegram.get("ativo", "False") == "True",
         "telegram_token": telegram.get("token", ""),
         "telegram_chat_id": telegram.get("chat_id", ""),
-        "apps_trabalho": [v.strip() for k, v in config["AppsTrabalho"].items() if v.strip()] if "AppsTrabalho" in config else [],
+        "apps_inicio_dia": [v.strip() for k, v in config["AppsInicioDia"].items() if v.strip()] if "AppsInicioDia" in config else [],
     }
 
 def carregar_stats():
@@ -755,25 +755,21 @@ class PomodoroApp:
             criar_evento_calendar(self.service, "Pomodoro: Foco", agora, fim, f"Sessão de {self.config['trabalho']} min")
         log("Pomodoro iniciado (trabalho).")
         self.notificar("Pomodoro", f"{self.tempo_restante//60} minutos de foco.")
-        
-        # Executar aplicativos configurados
-        self.executar_apps_trabalho()
-        
         self.atualizar_tempo()
         self.atualizar_interface()
 
-    def executar_apps_trabalho(self):
-        """Executa os aplicativos configurados no config.ini"""
-        apps = self.config.get("apps_trabalho", [])
+    def executar_apps_dia(self):
+        """Executa os aplicativos configurados no config.ini para o início do dia"""
+        apps = self.config.get("apps_inicio_dia", [])
         if not apps:
             return
 
-        log(f"A iniciar {len(apps)} aplicativos configurados...")
+        log(f"A iniciar {len(apps)} aplicativos de início de dia...")
         for app_path in apps:
             try:
                 # Remove aspas se existirem
                 path = app_path.strip('"').strip("'")
-                if os.path.exists(path):
+                if os.path.exists(path) or path.lower() == "cmd.exe" or path.lower() == "explorer.exe":
                     os.startfile(path)
                     log(f"Executado: {path}")
                 else:
@@ -956,6 +952,10 @@ class PomodoroApp:
 
         log("Novo dia iniciado! Contador zerado.")
         self.notificar("Novo Dia", "Jornada reiniciada com sucesso!")
+        
+        # Executar aplicativos de início de dia
+        self.executar_apps_dia()
+        
         self.atualizar_interface()
 
     def hora_almoco(self):
