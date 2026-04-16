@@ -5,6 +5,7 @@ import logging
 import configparser
 import json
 import math
+import subprocess
 import urllib.request
 import urllib.parse
 from datetime import date, datetime, timedelta
@@ -210,7 +211,12 @@ def criar_config_padrao():
         config["Icone"] = {"arquivo": "pomodoro.ico"}
         config["Calendar"] = {"integrado": "True", "tempo_almoco": "60"}
         config["Telegram"] = {"ativo": "False", "token": "", "chat_id": ""}
-        with open(CONFIG_FILE, "w") as f:
+        config["AppsTrabalho"] = {
+            "; coloque os caminhos dos aplicativos ou ficheiros .bat que deseja executar": "",
+            "; vscode": r"C:\Path\To\Code.exe",
+            "; chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        }
+        with open(CONFIG_FILE, "w", encoding='utf-8') as f:
             config.write(f)
 
 def carregar_config():
@@ -234,6 +240,7 @@ def carregar_config():
         "telegram_ativo": telegram.get("ativo", "False") == "True",
         "telegram_token": telegram.get("token", ""),
         "telegram_chat_id": telegram.get("chat_id", ""),
+        "apps_trabalho": [v.strip() for k, v in config["AppsTrabalho"].items() if v.strip()] if "AppsTrabalho" in config else [],
     }
 
 def carregar_stats():
@@ -748,8 +755,31 @@ class PomodoroApp:
             criar_evento_calendar(self.service, "Pomodoro: Foco", agora, fim, f"Sessão de {self.config['trabalho']} min")
         log("Pomodoro iniciado (trabalho).")
         self.notificar("Pomodoro", f"{self.tempo_restante//60} minutos de foco.")
+        
+        # Executar aplicativos configurados
+        self.executar_apps_trabalho()
+        
         self.atualizar_tempo()
         self.atualizar_interface()
+
+    def executar_apps_trabalho(self):
+        """Executa os aplicativos configurados no config.ini"""
+        apps = self.config.get("apps_trabalho", [])
+        if not apps:
+            return
+
+        log(f"A iniciar {len(apps)} aplicativos configurados...")
+        for app_path in apps:
+            try:
+                # Remove aspas se existirem
+                path = app_path.strip('"').strip("'")
+                if os.path.exists(path):
+                    os.startfile(path)
+                    log(f"Executado: {path}")
+                else:
+                    log(f"Ficheiro não encontrado: {path}")
+            except Exception as e:
+                log(f"Erro ao executar {app_path}: {e}")
 
     def iniciar_pausa(self):
         self._cancelar_aguardo_apos_pausa()
