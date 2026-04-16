@@ -923,10 +923,10 @@ class PomodoroApp:
         self._sinalizar_atualizacao_energia()
         log("Sem atividade após a pausa. Tela bloqueada.")
 
-    def comecar_dia(self):
+    def comecar_dia(self, pular_aviso=False):
         self._cancelar_aguardo_apos_pausa()
         hoje = str(date.today())
-        if self.stats["ultimo_dia"] == hoje and self.ciclos_hoje > 0:
+        if not pular_aviso and self.stats["ultimo_dia"] == hoje and self.ciclos_hoje > 0:
             if not messagebox.askyesno("Começar o Dia", "Isso vai zerar os ciclos de hoje. Continuar?"):
                 return
 
@@ -1008,7 +1008,7 @@ class PomodoroApp:
         if self.job_id:
             self.janela.after_cancel(self.job_id)
             self.job_id = None
-        self.comecar_dia()  # Zera contadores
+        self.comecar_dia(pular_aviso=True)  # Zera contadores
         self.notificar("Fim do Dia", "Jornada finalizada e salva!")
         log("Dia finalizado.")
 
@@ -1150,7 +1150,7 @@ class PomodoroApp:
             item("Iniciar Pausa", lambda icon, item: self.iniciar_pausa()),
             item("Pausar / Retomar", lambda icon, item: self.alternar_pausa()),
             item("Reiniciar", lambda icon, item: self.reiniciar()),
-            item("Começar o Dia", lambda icon, item: self.comecar_dia()),
+            item("Começar o Dia", lambda icon, item: self.comecar_dia(pular_aviso=False)),
             item("Hora do Almoço", lambda icon, item: self.hora_almoco()),
             item("Finalizar o Dia", lambda icon, item: self.finalizar_dia()),
             item("Estatísticas", lambda icon, item: self.mostrar_estatisticas()),
@@ -1204,13 +1204,12 @@ class PomodoroApp:
         self.icone = pystray.Icon("PomodoroTray", self.criar_icone_progresso(0), self.obter_texto_tray("PARADO", "00:00"), self.criar_menu())
         threading.Thread(target=self.icone.run, daemon=True).start()
 
-        if self.config["mostrar_janela"]:
-            self.criar_janela()
-            self.janela.after(100, self.atualizar_interface)
-            self.janela.mainloop()
-        else:
-            while self.rodando:
-                time.sleep(0.1)
+        self.criar_janela()
+        if not self.config["mostrar_janela"]:
+            self.janela.withdraw()
+        
+        self.janela.after(100, self.atualizar_interface)
+        self.janela.mainloop()
 
 
 if __name__ == "__main__":
